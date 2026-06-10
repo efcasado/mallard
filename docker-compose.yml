@@ -1,0 +1,28 @@
+services:
+  duckdb:
+    image: duckdb/duckdb:1.5.3
+    stdin_open: true
+    command:
+      - /duckdb
+      - -cmd
+      - >-
+        INSTALL quack;
+        LOAD quack;
+        CALL quack_serve('quack:0.0.0.0:9494',
+          token=>'secret',
+          allow_other_hostname=>true);
+    ports:
+      - "9494:9494"
+    healthcheck:
+      test:
+        - CMD
+        - /duckdb
+        - -c
+        - >-
+          LOAD quack;
+          SELECT * FROM quack_query('quack:localhost:9494',
+            'SELECT 1', token=>'secret', disable_ssl=>true);
+      interval: 3s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
