@@ -86,6 +86,23 @@ defmodule Mallard.Binary do
     {binary_part(rest, 0, len), binary_part(rest, len, byte_size(rest) - len)}
   end
 
+  @doc "Decode a single byte as boolean. Returns `{bool, rest}`."
+  def decode_bool(<<0, rest::binary>>), do: {false, rest}
+  def decode_bool(<<1, rest::binary>>), do: {true, rest}
+
+  @doc "Decode a ULEB128 count-prefixed list. Returns `{list, rest}`."
+  def decode_list(binary, decode_fn) do
+    {count, rest} = decode_uleb(binary)
+    decode_list_n(count, rest, [], decode_fn)
+  end
+
+  defp decode_list_n(0, rest, acc, _fn), do: {Enum.reverse(acc), rest}
+
+  defp decode_list_n(n, binary, acc, decode_fn) do
+    {item, rest} = decode_fn.(binary)
+    decode_list_n(n - 1, rest, [item | acc], decode_fn)
+  end
+
   @doc "Peek at the next 2-byte field ID without consuming it."
   def peek_field_id(<<id::little-16, _::binary>>), do: id
 

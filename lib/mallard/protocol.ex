@@ -2,91 +2,37 @@ defmodule Mallard.Protocol do
   @moduledoc """
   Quack protocol message encoding and decoding.
 
-  Each POST to /quack carries exactly one message (header object + body object)
-  and receives exactly one response back. This module covers the subset needed
-  for connection management: CONNECTION_REQUEST, CONNECTION_RESPONSE,
-  DISCONNECT_MESSAGE, SUCCESS_RESPONSE, and ERROR_RESPONSE.
+  Encodes outbound messages and dispatches inbound responses to the
+  appropriate message-specific decoder based on the header type field.
   """
 
   alias Mallard.Binary, as: B
+  alias Mallard.Protocol.ConnectionRequest
+  alias Mallard.Protocol.ConnectionResponse
+  alias Mallard.Protocol.DisconnectMessage
+  alias Mallard.Protocol.ErrorResponse
+  alias Mallard.Protocol.PrepareRequest
+  alias Mallard.Protocol.PrepareResponse
+  alias Mallard.Protocol.SuccessResponse
 
-  @quack_version 1
-
-  @type_connection_request 1
   @type_connection_response 2
-  @type_disconnect_message 11
+  @type_prepare_response 4
   @type_success_response 10
   @type_error_response 100
 
-  # ── Encoding ─────────────────────────────────────────────────────────────
+  def encode({:connection_request, opts}), do: ConnectionRequest.encode(opts)
+  def encode({:disconnect_message, connection_id, query_id}), do: DisconnectMessage.encode(connection_id, query_id)
+  def encode({:prepare_request, connection_id, sql}), do: PrepareRequest.encode(connection_id, sql)
 
-  @doc """
-  Encode a CONNECTION_REQUEST message.
-
-  Options:
-    - `:auth_string`      — authentication token (optional)
-    - `:client_platform`  — advertised platform string (default: "mallard-elixir")
-  """
-  def encode_connection_request(opts \\ []) do
-    auth_string = Keyword.get(opts, :auth_string)
-    client_platform = Keyword.get(opts, :client_platform, "mallard-elixir")
-
-    header =
-      B.encode_object(
-        B.encode_field(1, B.encode_uleb(@type_connection_request)) <>
-          B.encode_field(3, B.encode_uleb(B.optional_index_invalid()))
-      )
-
-    body =
-      B.encode_object(
-        maybe_string_field(1, auth_string) <>
-          maybe_string_field(3, client_platform) <>
-          B.encode_field(4, B.encode_uleb(@quack_version)) <>
-          B.encode_field(5, B.encode_uleb(@quack_version))
-      )
-
-    header <> body
-  end
-
-  @doc """
-  Encode a DISCONNECT_MESSAGE for the given connection and query ID.
-  """
-  def encode_disconnect_message(connection_id, query_id) do
-    header =
-      B.encode_object(
-        B.encode_field(1, B.encode_uleb(@type_disconnect_message)) <>
-          B.encode_field(2, B.encode_string(connection_id)) <>
-          B.encode_field(3, B.encode_uleb(query_id))
-      )
-
-    body = B.encode_object(<<>>)
-
-    header <> body
-  end
-
-  # ── Decoding ─────────────────────────────────────────────────────────────
-
-  @doc """
-  Decode a raw binary response from the server.
-
-  Returns one of:
-    - `{:ok, %{type: :connection_response, connection_id: ..., ...}}`
-    - `{:ok, %{type: :success_response}}`
-    - `{:error, {:server_error, message}}`
-    - `{:error, {:unsupported_message_type, type}}`
-  """
-  def decode_response(binary) do
+  def decode(binary) do
     {header, rest} = decode_header(binary)
     decode_body(header, rest)
   end
 
-  # ── Private ──────────────────────────────────────────────────────────────
-
-  defp decode_body(%{type: @type_connection_response} = header, binary),
-    do: decode_connection_response_body(header, binary)
-
-  defp decode_body(%{type: @type_success_response}, binary), do: decode_success_response_body(binary)
-  defp decode_body(%{type: @type_error_response}, binary), do: decode_error_response_body(binary)
+  defp decode_body(%{type: @type_connection_response} = header, binary), do: ConnectionResponse.decode(header, binary)
+  defp decode_body(%{type: @type_prepare_response} = header, binary), do: PrepareResponse.decode(header, binary)
+  defp decode_body(%{type: @type_success_response}, binary), do: SuccessResponse.decode(binary)
+  defp decode_body(%{type: @type_error_response}, binary), do: ErrorResponse.decode(binary)
   defp decode_body(%{type: type}, _binary), do: {:error, {:unsupported_message_type, type}}
 
   defp decode_header(binary) do
@@ -100,35 +46,4 @@ defmodule Mallard.Protocol do
 
     {%{type: type, connection_id: connection_id, query_id: query_id}, rest}
   end
-
-  defp decode_connection_response_body(header, binary) do
-    {server_version, rest} = B.read_optional_field(1, binary, nil, &B.decode_string/1)
-    {server_platform, rest} = B.read_optional_field(2, rest, nil, &B.decode_string/1)
-    {quack_version, rest} = B.read_optional_field(3, rest, nil, &B.decode_uleb/1)
-    B.read_end_object(rest)
-
-    {:ok,
-     %{
-       type: :connection_response,
-       connection_id: header.connection_id,
-       server_duckdb_version: server_version,
-       server_platform: server_platform,
-       quack_version: quack_version
-     }}
-  end
-
-  defp decode_success_response_body(binary) do
-    B.read_end_object(binary)
-    {:ok, %{type: :success_response}}
-  end
-
-  defp decode_error_response_body(binary) do
-    {message, rest} = B.read_optional_field(1, binary, "", &B.decode_string/1)
-    B.read_end_object(rest)
-    {:error, {:server_error, message}}
-  end
-
-  defp maybe_string_field(_id, nil), do: <<>>
-  defp maybe_string_field(_id, ""), do: <<>>
-  defp maybe_string_field(id, value), do: B.encode_field(id, B.encode_string(value))
 end

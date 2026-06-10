@@ -58,11 +58,11 @@ defmodule Mallard.Client do
       [client_platform: client_platform] ++
         if(auth_token, do: [auth_string: auth_token], else: [])
 
-    body = Protocol.encode_connection_request(msg_opts)
+    body = Protocol.encode({:connection_request, msg_opts})
 
     with {:ok, %{status: 200, body: raw}} <- Req.post(req, url: @quack_endpoint, body: body),
          {:ok, %{type: :connection_response, connection_id: id} = info}
-         when not is_nil(id) <- Protocol.decode_response(raw) do
+         when not is_nil(id) <- Protocol.decode(raw) do
       conn = %__MODULE__{
         base_url: base_url,
         connection_id: id,
@@ -80,6 +80,23 @@ defmodule Mallard.Client do
   end
 
   @doc """
+  Execute a SQL query and return the result set.
+
+  Returns `{:ok, %{columns: [%{name: name, type: type_id}], rows: [[value]]}}`.
+  """
+  def query(%__MODULE__{} = conn, sql) do
+    body = Protocol.encode({:prepare_request, conn.connection_id, sql})
+
+    with {:ok, %{status: 200, body: raw}} <- Req.post(conn.req, url: @quack_endpoint, body: body),
+         {:ok, %{type: :prepare_response} = result} <- Protocol.decode(raw) do
+      {:ok, Map.take(result, [:columns, :rows])}
+    else
+      {:ok, %{status: status}} -> {:error, {:http_error, status}}
+      {:error, _} = err -> err
+    end
+  end
+
+  @doc """
   Close an open Quack connection.
 
   Sends a DISCONNECT_MESSAGE and expects a SUCCESS_RESPONSE.
@@ -87,10 +104,10 @@ defmodule Mallard.Client do
   returned but the connection struct is not reusable afterwards regardless.
   """
   def disconnect(%__MODULE__{} = conn) do
-    body = Protocol.encode_disconnect_message(conn.connection_id, conn.next_query_id)
+    body = Protocol.encode({:disconnect_message, conn.connection_id, conn.next_query_id})
 
     with {:ok, %{status: 200, body: raw}} <- Req.post(conn.req, url: @quack_endpoint, body: body),
-         {:ok, %{type: :success_response}} <- Protocol.decode_response(raw) do
+         {:ok, %{type: :success_response}} <- Protocol.decode(raw) do
       :ok
     else
       {:ok, %{status: status}} -> {:error, {:http_error, status}}
